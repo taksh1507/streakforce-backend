@@ -72,7 +72,11 @@ async function getRecentActivity(username, days = 30) {
     const buckets = {};
     events.forEach(event => {
       if (event.type === 'PushEvent') {
-        const eventDate = new Date(event.created_at).toISOString().split('T')[0];
+        // Adjust UTC to IST (+5.5h) for local day grouping
+        const utcDate = new Date(event.created_at);
+        const istDate = new Date(utcDate.getTime() + (5.5 * 60 * 60 * 1000));
+        const eventDate = istDate.toISOString().split('T')[0];
+        
         const count = event.payload.size || (Array.isArray(event.payload.commits) ? event.payload.commits.length : 1);
         buckets[eventDate] = (buckets[eventDate] || 0) + count;
       }
@@ -80,8 +84,8 @@ async function getRecentActivity(username, days = 30) {
 
     const result = [];
     for (let i = days - 1; i >= 0; i--) {
-      const d = new Date();
-      d.setUTCDate(d.getUTCDate() - i);
+      const d = new Date(new Date().getTime() + (5.5 * 60 * 60 * 1000));
+      d.setDate(d.getDate() - i);
       const dateStr = d.toISOString().split('T')[0];
       result.push({ date: dateStr, commits: buckets[dateStr] || 0 });
     }
