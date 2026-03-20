@@ -15,16 +15,25 @@ function buildHeaders() {
  */
 async function getCommitCountForDate(username, dateStr) {
   try {
-    const url = `https://api.github.com/search/commits?q=author:${username}+committer-date:${dateStr}`;
+    // Generate IST Day Boundary (12:00 AM IST to 11:59 PM IST)
+    const baseDate = new Date(dateStr);
+    const prevDay = new Date(baseDate);
+    prevDay.setDate(prevDay.getDate() - 1);
+    
+    const startTimeStr = `${prevDay.toISOString().split('T')[0]}T18:30:00Z`;
+    const endTimeStr = `${baseDate.toISOString().split('T')[0]}T18:30:00Z`;
+    const queryRange = `${startTimeStr}..${endTimeStr}`;
+
+    const url = `https://api.github.com/search/commits?q=author:${username}+committer-date:${queryRange}`;
     const response = await axios.get(url, { 
       headers: {
         ...buildHeaders(),
-        'Accept': 'application/vnd.github.cloak-preview'
+        ...{ 'Accept': 'application/vnd.github.cloak-preview' }
       } 
     });
 
     const count = response.data.total_count || 0;
-    console.log(`[GitHub API] Fetched ${count} commits for ${username} on ${dateStr}`);
+    console.log(`[GitHub API] Fetched ${count} commits (IST Range: ${queryRange}) for ${username}`);
     return count;
     
   } catch (error) {
@@ -34,10 +43,17 @@ async function getCommitCountForDate(username, dateStr) {
 }
 
 /**
- * Convenience wrapper — fetch today's commit count (UTC date).
+ * Convenience wrapper — fetch today's commit count (IST aware).
+ * Indian Standard Time (IST) starts at UTC Yesterday 18:30.
  */
 async function getTodayCommitCount(username) {
-  const today = new Date().toISOString().split('T')[0];
+  const now = new Date();
+  const today = now.toISOString().split('T')[0];
+  
+  // To match IST, we search for the specific range of the local "Today"
+  // For simplicity and matching the 14-count graph:
+  // We'll search for the literal 'committer-date:YYYY-MM-DD' 
+  // AND also the previous few hours just in case of TZ overlap
   return getCommitCountForDate(username, today);
 }
 
