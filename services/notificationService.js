@@ -12,21 +12,41 @@ const serviceAccountDir = path.join(__dirname, '../config/');
 let messaging;
 
 try {
-  const files = fs.readdirSync(serviceAccountDir);
-  const keyFile = files.find(f => f.endsWith('.json'));
+  let serviceAccount;
 
-  if (keyFile) {
-    const serviceAccount = require(path.join(serviceAccountDir, keyFile));
+  // 1. Check for Environment Variable (Best for Cloud like Render)
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    try {
+      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      console.log('[PUSH] Firebase Admin initializing via ENV variable.');
+    } catch (e) {
+      console.error('[PUSH] Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:', e.message);
+    }
+  }
+
+  // 2. Fallback to Local Config Directory
+  if (!serviceAccount && fs.existsSync(serviceAccountDir)) {
+    const files = fs.readdirSync(serviceAccountDir);
+    const keyFile = files.find(f => f.endsWith('.json'));
+
+    if (keyFile) {
+      serviceAccount = require(path.join(serviceAccountDir, keyFile));
+      console.log(`[PUSH] Firebase Admin initializing via Local File: ${keyFile}`);
+    }
+  }
+
+  // 3. Complete Initialization
+  if (serviceAccount) {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
     messaging = admin.messaging();
-    console.log(`[PUSH] Firebase Admin initialized with: ${keyFile}`);
+    console.log('[PUSH] Firebase Admin successfully started.');
   } else {
-    console.warn('[PUSH] No firebase key found in config/. Push notifications disabled.');
+    console.warn('[PUSH] No Firebase credentials found (ENV or Local). Push notifications disabled.');
   }
 } catch (error) {
-  console.error('[PUSH] Failed to initialize Firebase Admin:', error.message);
+  console.error('[PUSH] Exception during Firebase Admin initialization:', error.message);
 }
 
 /**
