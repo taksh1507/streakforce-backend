@@ -23,10 +23,12 @@ async function getCommitCountForDate(username, dateStr) {
       } 
     });
 
-    return response.data.total_count || 0;
+    const count = response.data.total_count || 0;
+    console.log(`[GitHub API] Fetched ${count} commits for ${username} on ${dateStr}`);
+    return count;
+    
   } catch (error) {
     console.error(`[GitHub Search] Error for ${username}:`, error.message);
-    // If search fails or rate limits, try fallback to event stream
     return 0;
   }
 }
