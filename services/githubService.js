@@ -26,11 +26,9 @@ async function getCommitCountForDate(username, dateStr) {
       if (event.type === 'PushEvent') {
         const eventDate = new Date(event.created_at).toISOString().split('T')[0];
         if (eventDate === dateStr && event.payload) {
-          if (Array.isArray(event.payload.commits)) {
-            count += event.payload.commits.length;
-          } else {
-            count += 1; // Fallback: count push as 1 if commits array missing
-          }
+          // Use .size for the most accurate commit count in a push
+          // (payload.commits may be truncated in the events API)
+          count += event.payload.size || (Array.isArray(event.payload.commits) ? event.payload.commits.length : 1);
         }
       }
     });
@@ -75,8 +73,7 @@ async function getRecentActivity(username, days = 30) {
     events.forEach(event => {
       if (event.type === 'PushEvent') {
         const eventDate = new Date(event.created_at).toISOString().split('T')[0];
-        const count = (event.payload && Array.isArray(event.payload.commits)) 
-          ? event.payload.commits.length : 1; // Fallback to 1
+        const count = event.payload.size || (Array.isArray(event.payload.commits) ? event.payload.commits.length : 1);
         buckets[eventDate] = (buckets[eventDate] || 0) + count;
       }
     });
@@ -120,8 +117,7 @@ async function getRepoInsights(username) {
 
       // Track commit counts for activity
       if (event.type === 'PushEvent') {
-        const count = (event.payload && Array.isArray(event.payload.commits)) 
-          ? event.payload.commits.length : 1;
+        const count = event.payload.size || (Array.isArray(event.payload.commits) ? event.payload.commits.length : 1);
         repoStats[repoName] = (repoStats[repoName] || 0) + count;
       }
     });
