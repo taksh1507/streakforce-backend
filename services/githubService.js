@@ -11,40 +11,22 @@ function buildHeaders() {
 
 /**
  * Fetch commit count for a specific GitHub user on a given date (YYYY-MM-DD, UTC).
- * Uses the /users/{username}/events endpoint (returns last ~300 events).
+ * Uses the /search/commits API — extremely accurate and includes all branches.
  */
 async function getCommitCountForDate(username, dateStr) {
   try {
-    const url = `https://api.github.com/users/${username}/events?per_page=100`;
-    const response = await axios.get(url, { headers: buildHeaders() });
-
-    const events = response.data;
-    if (!Array.isArray(events)) return 0;
-
-    let count = 0;
-    events.forEach(event => {
-      if (event.type === 'PushEvent') {
-        const eventDate = new Date(event.created_at).toISOString().split('T')[0];
-        if (eventDate === dateStr && event.payload) {
-          // Use .size for the most accurate commit count in a push
-          // (payload.commits may be truncated in the events API)
-          count += event.payload.size || (Array.isArray(event.payload.commits) ? event.payload.commits.length : 1);
-        }
-      }
+    const url = `https://api.github.com/search/commits?q=author:${username}+committer-date:${dateStr}`;
+    const response = await axios.get(url, { 
+      headers: {
+        ...buildHeaders(),
+        'Accept': 'application/vnd.github.cloak-preview'
+      } 
     });
 
-    return count;
+    return response.data.total_count || 0;
   } catch (error) {
-    if (error.response) {
-      const status = error.response.status;
-      if (status === 404) {
-        console.warn(`[GitHub] User not found: ${username}`);
-      } else if (status === 403) {
-        console.warn(`[GitHub] Rate limited. Set GITHUB_TOKEN in .env to increase limit.`);
-      }
-    } else {
-      console.error(`[GitHub] Error fetching data for ${username}:`, error.message);
-    }
+    console.error(`[GitHub Search] Error for ${username}:`, error.message);
+    // If search fails or rate limits, try fallback to event stream
     return 0;
   }
 }
