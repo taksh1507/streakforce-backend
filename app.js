@@ -6,6 +6,7 @@ const cors = require('cors');
 // Routes
 const authRoutes = require('./routes/auth');
 const dashboardRoutes = require('./routes/dashboard');
+const activityRoutes = require('./routes/activity');
 
 // Services & Cron
 const { initCronJobs } = require('./cron/cronJobs');
@@ -34,6 +35,7 @@ mongoose.connect(MONGO_URI)
 // Setup Clean Mount Paths
 app.use('/auth', authRoutes);
 app.use('/dashboard', dashboardRoutes);
+app.use('/activity', activityRoutes);
 
 // Health Endpoint suitable for initial server verification
 app.get('/health', (req, res) => {

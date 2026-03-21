@@ -47,6 +47,36 @@ const userSchema = new mongoose.Schema({
     totalDays: { type: Number, default: 7 },
   },
 
+  disciplineScore: {
+    type: Number,
+    default: 0,
+  },
+  skillProgress: [{
+    skill: String,
+    level: Number,
+    daysConsistent: Number,
+  }],
+  streaks: {
+    coding: { type: Number, default: 0 },
+    focus: { type: Number, default: 0 },
+    learning: { type: Number, default: 0 },
+  },
+  noZeroDayMode: {
+    type: Boolean,
+    default: true,
+  },
+  autoDiscipline: {
+    type: Boolean,
+    default: true,
+  },
+  aiPlan: {
+    dailyMission: { type: String, default: "1 commit + 30m focus" },
+    tasks: [{ title: String, completed: { type: Boolean, default: false } }],
+  },
+  distractionAlerts: {
+    type: Number,
+    default: 0,
+  },
   lastNotificationSentAt: {
     type: String, // YYYY-MM-DD-HH format for granular tracking
     default: null,

@@ -2,6 +2,8 @@ const express = require('express');
 const User = require('../models/User');
 const Activity = require('../models/Activity');
 const Log = require('../models/Log');
+const Task = require('../models/Task');
+const FocusSession = require('../models/FocusSession');
 const { getTodayCommitCount, getRecentActivity, getRepoInsights } = require('../services/githubService');
 
 const router = express.Router();
@@ -9,19 +11,53 @@ const router = express.Router();
 /**
  * Derived analytics helpers
  */
-const calculateStreak = (activity) => {
+const calculateStreak = (activityMap, focusActivity, taskActivity, noZeroDayMode) => {
   let streak = 0;
-  const sorted = [...activity].reverse();
+  const today = new Date().toISOString().split('T')[0];
+  
+  // Combine all activity into a daily map
+  const dailyActive = {};
+  
+  // GitHub activity
+  activityMap.forEach(day => {
+    if (day.commits > 0) dailyActive[day.date] = true;
+  });
 
-  for (let day of sorted) {
-    if (day.commits > 0) {
+  if (noZeroDayMode) {
+    // Focus activity
+    focusActivity.forEach(session => {
+      const date = session.startTime.toISOString().split('T')[0];
+      if (session.durationMinutes > 0) dailyActive[date] = true;
+    });
+
+    // Task activity
+    taskActivity.forEach(task => {
+      if (task.isCompleted && task.dueDate) {
+        const date = task.dueDate.toISOString().split('T')[0];
+        dailyActive[date] = true;
+      }
+    });
+  }
+
+  // Calculate streak from today backwards
+  const sortedDates = Object.keys(dailyActive).sort().reverse();
+  
+  let checkDate = new Date();
+  while (true) {
+    const dateStr = checkDate.toISOString().split('T')[0];
+    if (dailyActive[dateStr]) {
       streak++;
+      checkDate.setDate(checkDate.getDate() - 1);
     } else {
-      const today = new Date().toISOString().split('T')[0];
-      if (day.date === today && day.commits === 0) continue;
+      // If it's today and no activity yet, don't break the streak
+      if (dateStr === today) {
+        checkDate.setDate(checkDate.getDate() - 1);
+        continue;
+      }
       break;
     }
   }
+
   return streak;
 };
 
@@ -31,37 +67,34 @@ const getRecentCommitDate = (activity) => {
   return commitDay ? commitDay.date : 'Never';
 };
 
-const getAiNudge = (commits, streak, hour, personality) => {
-  const isDone = commits > 0;
-  
+const getAiNudge = (hasActivity, streak, hour, personality) => {
   const nudges = {
     chill: {
       done: { title: "Chilling now.", subtitle: "Streak secured. You've earned a break." },
-      risk: { title: "No pressure.", subtitle: "One commit keeps the engine warm." },
+      risk: { title: "No pressure.", subtitle: "One commit or focus session keeps the engine warm." },
       critical: { title: "Quick push?", subtitle: "Almost midnight. Just a tiny fix?" }
     },
     coach: {
       done: { title: "Streak maintained.", subtitle: "Consistency is the key to mastery. Good job." },
-      risk: { title: "Consistency check.", subtitle: "Your 3-day momentum is at stake. Save it." },
+      risk: { title: "Consistency check.", subtitle: "Your momentum is at stake. Save it." },
       critical: { title: "Deadline approaching.", subtitle: "Less than 3 hours left. Time to ship." }
     },
     savage: {
       done: { title: "Monster mode.", subtitle: "Another day dominated. Keep that fire burning." },
-      risk: { title: "Don't be weak.", subtitle: "Your streak is dying. One commit or it's gone." },
+      risk: { title: "Don't be weak.", subtitle: "Your streak is dying. Do something or it's gone." },
       critical: { title: "CRITICAL: Midnight.", subtitle: "Tick tock. Save your streak or face the shame." }
     }
   };
 
   const p = nudges[personality] || nudges.coach;
 
-  if (isDone) return p.done;
+  if (hasActivity) return p.done;
   if (hour >= 21) return p.critical;
   if (hour >= 18) return p.risk;
   
-  // Default morning/afternoon
   return hour < 12 
     ? { title: "Morning mission.", subtitle: "Start early, ship fast." }
-    : { title: "Daily discipline.", subtitle: "The goal is waiting. One commit is enough." };
+    : { title: "Daily discipline.", subtitle: "The goal is waiting. One session is enough." };
 };
 
 /**
@@ -78,49 +111,84 @@ router.get('/:userId', async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ error: 'User does not exist.' });
 
-    // 1. Fetch data from GitHub
+    // 1. Fetch data from various sources
     const todayCommits = await getTodayCommitCount(user.username);
     const activityMap = await getRecentActivity(user.username, 30);
     const repoInsights = await getRepoInsights(user.username);
 
+    // Fetch Tasks
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const endOfToday = new Date();
+    endOfToday.setHours(23, 59, 59, 999);
+
+    const todayTasks = await Task.find({
+      userId,
+      dueDate: { $gte: startOfToday, $lte: endOfToday }
+    });
+
+    // Fetch Focus Sessions
+    const todayFocus = await FocusSession.find({
+      userId,
+      startTime: { $gte: startOfToday, $lte: endOfToday }
+    });
+
+    const totalFocusMins = todayFocus.reduce((sum, s) => sum + (s.durationMinutes || 0), 0);
+    const tasksCompleted = todayTasks.filter(t => t.isCompleted).length;
+
     // 2. Intelligence Calculations
-    const currentStreak = calculateStreak(activityMap);
+    const hasActivityToday = todayCommits > 0 || totalFocusMins > 0 || tasksCompleted > 0;
+    
+    const currentStreak = calculateStreak(activityMap, todayFocus, todayTasks, user.noZeroDayMode);
     const lastCommitDate = getRecentCommitDate(activityMap);
     const now = new Date();
     const currentHour = now.getHours();
     
-    // Deadline Timer Calculation
+    // Deadline Timer
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
     const msLeft = endOfDay - now;
-    const hoursLeft = Math.floor(msLeft / (1000 * 60 * 60));
-    const minsLeft = Math.floor((msLeft / (1000 * 60)) % 60);
-    const timeLeftStr = `${hoursLeft}h ${minsLeft}m left`;
+    const timeLeftStr = `${Math.floor(msLeft / (1000 * 60 * 60))}h ${Math.floor((msLeft / (1000 * 60)) % 60)}m left`;
 
-    // Consistency Score (Last 30 days)
+    // Discipline Score Calculation
+    // 30% commits, 40% focus (goal 2h), 30% consistency (last 30 days)
     const activeDays30 = activityMap.filter(day => day.commits > 0).length;
-    const consistencyScore = Math.round((activeDays30 / 30) * 100);
+    const consistencyScore = (activeDays30 / 30) * 30;
+    const focusScore = Math.min((totalFocusMins / 120) * 40, 40);
+    const commitScore = todayCommits > 0 ? 30 : 0;
+    const disciplineScore = Math.round(consistencyScore + focusScore + commitScore);
 
     // Risk Logic
     let riskLevel = 'SAFE';
-    if (todayCommits === 0) {
+    if (!hasActivityToday) {
       if (currentHour >= 21) riskLevel = 'CRITICAL';
       else if (currentHour >= 18) riskLevel = 'AT_RISK';
     }
 
     // AI Nudge
-    const nudge = getAiNudge(todayCommits, currentStreak, currentHour, user.personalityMode || 'coach');
+    const nudge = getAiNudge(hasActivityToday, currentStreak, currentHour, user.personalityMode || 'coach');
 
-    // Goals & Missions progress logic
-    const dailyProgress = Math.min(Math.round((todayCommits / (user.dailyGoal || 1)) * 100), 100);
-    
-    // Last 7 days summary
-    const last7Days = activityMap.slice(-7);
-    const totalCommits7 = last7Days.reduce((sum, day) => sum + day.commits, 0);
-    const activeDays7 = last7Days.filter(day => day.commits > 0).length;
+    // Failure Impact (NEW)
+    const failureImpact = {
+      from: currentStreak,
+      to: 0,
+       isCritical: !hasActivityToday && currentHour >= 21,
+       message: !hasActivityToday ? `DANGER: ${currentStreak} → 0 if missed.` : `SECURED: ${currentStreak} maintained.`
+    };
 
-    // 4. Fetch latest 20 logs
-    const logs = await Log.find({ userId }).sort({ timestamp: -1 }).limit(10).lean();
+    // AI Daily Plan (NEW)
+    const aiPlan = user.aiPlan || {
+      dailyMission: todayCommits > 0 ? "Commit detected. Next: 30m Deep Work." : "MISSION: 1 Commit + 30m Focus",
+      recommendedDuration: 45
+    };
+
+    // Heatmap Story Mode (NEW - last 7 days details)
+    const storyMode = activityMap.slice(-7).map(day => ({
+      date: day.date,
+      commits: day.commits,
+      tasks: 0, // Mock for now
+      focusMins: 0, // Mock for now
+    }));
 
     res.json({
       success: true,
@@ -128,53 +196,36 @@ router.get('/:userId', async (req, res) => {
         user: {
           username: user.username,
           mode: (user.personalityMode || 'coach').toUpperCase(),
-          timezone: user.timezone || 'IST'
+          disciplineScore: disciplineScore,
+          autoDiscipline: user.autoDiscipline
         },
         streak: {
           count: currentStreak,
           label: `${currentStreak} Day Streak`,
-          pressureLabel: `${currentStreak} days at stake`,
-          lastCommit: lastCommitDate,
           riskLevel: riskLevel,
-          statusColor: riskLevel === 'SAFE' ? '#10B981' : (riskLevel === 'AT_RISK' ? '#F59E0B' : '#EF4444')
+          statusColor: riskLevel === 'SAFE' ? '#10B981' : (riskLevel === 'AT_RISK' ? '#F59E0B' : '#EF4444'),
+          failureImpact
         },
         deadline: {
           timeLeft: timeLeftStr,
-          rawSeconds: Math.floor(msLeft / 1000)
+          rawSeconds: Math.floor(msLeft / 1000),
+          percentDayLeft: Math.round((msLeft / (24 * 60 * 60 * 1000)) * 100)
         },
-        goals: {
-          daily: {
-            target: user.dailyGoal || 1,
-            current: todayCommits,
-            progress: dailyProgress,
-            label: `${todayCommits} / ${user.dailyGoal || 1} commits`
-          },
-          weekly: {
-            target: user.weeklyGoal || 5,
-            current: activeDays7,
-            label: `${activeDays7} / ${user.weeklyGoal || 5} days active`
-          }
+        aiPlan,
+        storyMode,
+        deepWork: {
+          todayMins: totalFocusMins,
+          goalMins: 120,
+          progress: Math.min(Math.round((totalFocusMins / 120) * 100), 100)
         },
-        insights: {
-          consistencyScore: consistencyScore,
-          activeDays7: activeDays7,
-          missedDays7: 7 - activeDays7,
-          mostActiveRepo: repoInsights.mostActive,
-          lastUpdated: repoInsights.lastUpdated
+        tasks: {
+          total: todayTasks.length,
+          completed: tasksCompleted,
+          list: todayTasks
         },
-        mission: user.activeMission || {
-          title: "7-Day Consistency Challenge",
-          currentDay: 0,
-          totalDays: 7
-        },
-        activity: activityMap,
         nudge: nudge,
-        syncStatus: "Just now",
-        logs: logs.map(l => ({
-          type: l.type,
-          message: l.message,
-          time: l.timestamp,
-        }))
+        activity: activityMap,
+        disciplineScore: disciplineScore
       }
     });
 

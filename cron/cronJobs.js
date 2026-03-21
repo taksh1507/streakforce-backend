@@ -2,6 +2,8 @@ const cron = require('node-cron');
 const User = require('../models/User');
 const Activity = require('../models/Activity');
 const Log = require('../models/Log');
+const Task = require('../models/Task');
+const FocusSession = require('../models/FocusSession');
 const { getTodayCommitCount } = require('../services/githubService');
 const { sendNotification } = require('../services/notificationService');
 
@@ -10,7 +12,7 @@ const { sendNotification } = require('../services/notificationService');
  */
 const generateSmartMessage = (streak, type) => {
   if (type === 'critical') {
-    return `⚠️ ${streak}-day streak will break soon. Act now!`;
+    return `⚠️ ${streak}-day discipline streak will break soon. Act now!`;
   }
   if (type === 'warning') {
     return `You're ${streak} days consistent. Don't lose that momentum today.`;
@@ -31,15 +33,31 @@ function initCronJobs() {
       const todayStr = now.toISOString().split('T')[0];
       const currentHour = now.getHours();
 
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const endOfToday = new Date();
+      endOfToday.setHours(23, 59, 59, 999);
+
       const yesterday = new Date(now);
       yesterday.setDate(yesterday.getDate() - 1);
       const yesterdayStr = yesterday.toISOString().split('T')[0];
 
       for (const user of users) {
-        // 1. Tally live commits
+        // 1. Tally activity
         const commits = await getTodayCommitCount(user.username);
+        const focusSessionCount = await FocusSession.countDocuments({
+          userId: user._id,
+          startTime: { $gte: startOfToday, $lte: endOfToday }
+        });
+        const completedTasksCount = await Task.countDocuments({
+          userId: user._id,
+          isCompleted: true,
+          dueDate: { $gte: startOfToday, $lte: endOfToday }
+        });
+
+        const hasActivity = commits > 0 || focusSessionCount > 0 || completedTasksCount > 0;
         
-        // 2. Update Activity table
+        // 2. Update Activity table (GitHub only for now)
         await Activity.findOneAndUpdate(
           { userId: user._id, date: new Date(todayStr) },
           { commitCount: commits },
@@ -47,21 +65,33 @@ function initCronJobs() {
         );
 
         // 3. Streak Increment Logic
-        const lastCommitStr = user.lastCommitDate ? user.lastCommitDate.toISOString().split('T')[0] : null;
-        if (commits > 0 && lastCommitStr !== todayStr) {
+        const lastActivityStr = user.lastCommitDate ? user.lastCommitDate.toISOString().split('T')[0] : null;
+        if (hasActivity && lastActivityStr !== todayStr) {
           user.currentStreak += 1;
-          user.lastCommitDate = new Date();
+          user.lastCommitDate = new Date(); // Using this as lastActivityDate
           await user.save();
           
           await Log.create({
             userId: user._id,
             type: 'activity',
-            message: 'Streak maintained!',
+            message: 'Discipline streak maintained!',
           });
         } 
         
-        // 4. Streak Break Logic
-        if (commits === 0 && lastCommitStr && lastCommitStr !== todayStr && lastCommitStr !== yesterdayStr) {
+        // 4. Auto-Discipline Mode Switching (NEW)
+        if (user.autoDiscipline) {
+          const score = user.disciplineScore || 0;
+          if (score < 40 && user.personalityMode !== 'savage') {
+            user.personalityMode = 'savage';
+            await Log.create({ userId: user._id, type: 'system', message: 'Auto-Discipline: Switched to SAVAGE mode (Low Score)' });
+          } else if (score > 85 && user.currentStreak >= 5 && user.personalityMode !== 'chill') {
+            user.personalityMode = 'chill';
+            await Log.create({ userId: user._id, type: 'system', message: 'Auto-Discipline: Switched to CHILL mode (High Consistency)' });
+          }
+        }
+
+        // 5. Streak Break Logic
+        if (!hasActivity && lastActivityStr && lastActivityStr !== todayStr && lastActivityStr !== yesterdayStr) {
           if (user.currentStreak > 0) {
             const oldStreak = user.currentStreak;
             user.currentStreak = 0;
@@ -69,23 +99,23 @@ function initCronJobs() {
             await Log.create({
               userId: user._id,
               type: 'system',
-              message: `Streak broken! Lost ${oldStreak} days.`
+              message: `Streak broken! Lost ${oldStreak} days of discipline.`
             });
             if (user.fcmToken) {
-              await sendNotification(user.fcmToken, 'Streak Broken 💔', `You lost your ${oldStreak}-day streak. Time to restart!`);
+              await sendNotification(user.fcmToken, 'Streak Broken 💔', `You lost your ${oldStreak}-day discipline streak. Time to restart!`);
             }
           }
         }
 
-        // 5. Smart Multi-Stage Notifications
-        if (commits === 0 && user.fcmToken && user.currentStreak > 0) {
+        // 6. Smart Multi-Stage Notifications
+        if (!hasActivity && user.fcmToken && user.currentStreak > 0) {
           const usualTime = user.usualCommitTime || 20;
-          const reminderHour = usualTime - 2;
-          const warningHour = usualTime;
-          const criticalHour = usualTime + 2;
+          const reminderHour = 10; // 10 AM
+          const warningHour = 18; // 6 PM
+          const criticalHour = 22; // 10 PM
 
           let type = null;
-          let title = "StreakForce AI";
+          let title = "Discipline OS";
 
           if (currentHour === reminderHour) {
             type = 'reminder';
@@ -99,7 +129,7 @@ function initCronJobs() {
           }
 
           if (type) {
-            // Anti-Spam Check: Don't send the same type twice in one day
+            // Anti-Spam Check
             const sentAtKey = `${todayStr}-${type}`;
             if (user.lastNotificationSentAt !== sentAtKey) {
               const body = generateSmartMessage(user.currentStreak, type);
@@ -123,7 +153,6 @@ function initCronJobs() {
     }
   });
 }
-
 
 module.exports = {
   initCronJobs
